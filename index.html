@@ -297,7 +297,7 @@
         </div>
       </div>
       <div class="plot-wrap" id="lossWrap"><canvas id="lossCanvas" aria-label="Training and validation loss over training steps, log scale"></canvas></div>
-      <p class="plot-note" id="lossNote" hidden>Weight decay is on, but the plotted losses are only the mean squared error, without the penalty <span id="lossNoteTex"></span>.</p>
+      <p class="plot-note" id="lossNote" hidden>Training used weight decay, but the plotted losses are only the mean squared error, without the penalty <span id="lossNoteTex"></span>.</p>
     </section>
 
     <section class="card">
@@ -519,7 +519,7 @@ function trainStep(net, opt, data, batchSize, weightDecay, rng) {
       }
 
   opt.step(net.params);                                 // 3. update the weights
-  return { batch, preds, loss, penalty };
+  return { batch, preds, loss, penalty, lr: opt.lr, decay: weightDecay };
 }
 </script>
 
@@ -608,6 +608,7 @@ let data, net, opt, batchRng;
 let stepCount = 0, running = false;
 let hist;                       // loss history
 let pending = { sum: 0, n: 0 };  // mini-batch losses since the last point on the loss curve
+let decayUsed = false;           // whether any step on the loss curve used weight decay
 let last = null;                // info about the most recent training step
 let tracked = null;             // { type: 'w' | 'b', l, j, i }: the parameter shown in the step inspector
 let activePreset = -1, presetModified = false;
@@ -690,6 +691,7 @@ function rebuildNet() {
 function resetHistory() {
   hist = { step: [], train: [], nb: [], val: [] };
   pending = { sum: 0, n: 0 };
+  decayUsed = false;
   if (net && data) recordLosses();
 }
 
@@ -719,6 +721,7 @@ function doOneStep() {
   stepCount++;
   last = info;
   pending.sum += info.loss; pending.n++;
+  if (info.decay > 0) decayUsed = true;
   return Number.isFinite(info.loss);
 }
 
@@ -957,9 +960,9 @@ function drawFit() {
 
 // ---------- Plot 2: loss curves ----------
 function drawLoss() {
-  $('lossNote').hidden = !(S.decay > 0);    // before measuring the canvas: the note takes up space
+  $('lossNote').hidden = !decayUsed;    // before measuring the canvas: the note takes up space
   const pen = penaltyTex();
-  if (S.decay > 0 && $('lossNoteTex').dataset.tex !== pen) $('lossNoteTex').innerHTML = tex($('lossNoteTex').dataset.tex = pen);
+  if (decayUsed && $('lossNoteTex').dataset.tex !== pen) $('lossNoteTex').innerHTML = tex($('lossNoteTex').dataset.tex = pen);
   const { ctx, w, h } = setupCanvas($('lossCanvas'));
   const m = { l: 58, r: 54, t: 12, b: 46 };
   const pw = w - m.l - m.r, ph = h - m.t - m.b;
@@ -1260,13 +1263,13 @@ function renderInspector() {
   // the set 𝓑 of its indices; the full batch sums over all n = 1, …, N. One point has no index.
   let lossTex = B === 1 ? 'L = (\\hat y - y)^2'
     : `L = \\frac{1}{${B}} \\sum_{${B === n ? `n=1}^{${n}}` : 'n \\in \\mathcal{B}}'} (\\hat y_n - y_n)^2`;
-  if (S.decay > 0) lossTex += ` + ${penaltyTex()}`;
-  const lossVal = S.decay > 0 ? `${texNum(last.loss)} + ${texNum(last.penalty)} = ${texNum(last.loss + last.penalty)}` : texNum(last.loss);
+  if (last.decay > 0) lossTex += ` + ${penaltyTex()}`;
+  const lossVal = last.decay > 0 ? `${texNum(last.loss)} + ${texNum(last.penalty)} = ${texNum(last.loss + last.penalty)}` : texNum(last.loss);
   fwd += `<div class="insp-line sub">loss ${tex(`${lossTex} = ${lossVal}`)}</div>`;
 
   // Gradient formulas, written out for models with at most one hidden layer
   const err = '2(\\hat y - y)';
-  const decayTerm = w => (S.decay > 0 ? ` + \\lambda ${w}` : '');
+  const decayTerm = w => (last.decay > 0 ? ` + \\lambda ${w}` : '');
   let formula = null;                              // parameter → right-hand side of ∂L/∂θ
   const defs = [];
   if (net.L === 1) {
@@ -1301,12 +1304,12 @@ function renderInspector() {
   if (!formula) {
     notes = `<div class="insp-line hint">Backpropagation (the chain rule) computes the gradients of all ${net.numParams.toLocaleString()} parameters.</div>`;
     const wTex = scalarNet() ? 'w_k' : '(\\mathbf{W}_k)_{i,j}';
-    if (S.decay > 0) notes += `<div class="insp-line hint">The gradient of every weight ${tex(wTex)} includes the term ${tex(`\\lambda ${wTex}`)} from weight decay.</div>`;
+    if (last.decay > 0) notes += `<div class="insp-line hint">The gradient of every weight ${tex(wTex)} includes the term ${tex(`\\lambda ${wTex}`)} from weight decay.</div>`;
   }
 
   el.innerHTML = `
     ${fwd}
-    <div class="insp-line"><b>Backward pass and update:</b> ${tex(`\\theta \\leftarrow \\theta - \\eta\\, \\partial L / \\partial \\theta, \\quad \\eta = ${S.lr}`)}</div>
+    <div class="insp-line"><b>Backward pass and update:</b> ${tex(`\\theta \\leftarrow \\theta - \\eta\\, \\partial L / \\partial \\theta, \\quad \\eta = ${last.lr}`)}</div>
       <table class="ptab"><thead><tr><th>Parameter ${tex('\\theta')}</th><th>Before</th>${formulaHead}<th>Gradient</th><th>After</th></tr></thead>
       <tbody>${rows}${more}</tbody></table>${notes}`;
 }
